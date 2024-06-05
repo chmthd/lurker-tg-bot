@@ -1,4 +1,4 @@
-const walletAddresses = new Set();
+const KV_NAMESPACE = 'WALLETS';
 
 export default {
   async fetch(request, env) {
@@ -26,7 +26,7 @@ async function handleWebhook(request, env) {
   try {
     const update = await request.json();
     console.log('Webhook update received:', JSON.stringify(update, null, 2));
-    const message = createMessageFromUpdate(update);
+    const message = await createMessageFromUpdate(update, env);
     if (message) {
       console.log('Sending Telegram message:', message);
       await sendTelegramMessage(message, env);
@@ -44,7 +44,7 @@ async function addWallet(request, env) {
   const url = new URL(request.url);
   const wallet = url.searchParams.get('address');
   if (wallet) {
-    walletAddresses.add(wallet);
+    await env[KV_NAMESPACE].put(wallet, 'tracked');
     console.log(`Wallet ${wallet} added for tracking.`);
     await sendTelegramMessage(`Wallet ${wallet} added for tracking.`, env);
     return new Response('Wallet added', { status: 200 });
@@ -55,8 +55,8 @@ async function addWallet(request, env) {
 async function removeWallet(request, env) {
   const url = new URL(request.url);
   const wallet = url.searchParams.get('address');
-  if (wallet && walletAddresses.has(wallet)) {
-    walletAddresses.delete(wallet);
+  if (wallet) {
+    await env[KV_NAMESPACE].delete(wallet);
     console.log(`Wallet ${wallet} removed from tracking.`);
     await sendTelegramMessage(`Wallet ${wallet} removed from tracking.`, env);
     return new Response('Wallet removed', { status: 200 });
@@ -70,21 +70,23 @@ async function handleBot(request, env) {
   return new Response('OK', { status: 200 });
 }
 
-function createMessageFromUpdate(update) {
+async function createMessageFromUpdate(update, env) {
   if (!update || !Array.isArray(update) || update.length === 0) return null;
+
+  const trackedWallets = await getTrackedWallets(env);
 
   for (const tx of update) {
     if (tx.nativeTransfers) {
       for (const transfer of tx.nativeTransfers) {
-        if (walletAddresses.has(transfer.fromUserAccount) || walletAddresses.has(transfer.toUserAccount)) {
+        if (trackedWallets.has(transfer.fromUserAccount) || trackedWallets.has(transfer.toUserAccount)) {
           return `New transaction detected involving wallet:\n\n${JSON.stringify(transfer, null, 2)}`;
         }
       }
     }
-    
+
     if (tx.accountData) {
       for (const account of tx.accountData) {
-        if (walletAddresses.has(account.account)) {
+        if (trackedWallets.has(account.account)) {
           return `New transaction detected involving wallet:\n\n${JSON.stringify(account, null, 2)}`;
         }
       }
@@ -92,13 +94,13 @@ function createMessageFromUpdate(update) {
 
     if (tx.tokenTransfers) {
       for (const transfer of tx.tokenTransfers) {
-        if (walletAddresses.has(transfer.fromUserAccount) || walletAddresses.has(transfer.toUserAccount)) {
+        if (trackedWallets.has(transfer.fromUserAccount) || trackedWallets.has(transfer.toUserAccount)) {
           return `New token transfer detected involving wallet:\n\n${JSON.stringify(transfer, null, 2)}`;
         }
       }
     }
   }
-  
+
   return null;
 }
 
@@ -124,7 +126,7 @@ async function handleTelegramCommand(update, env) {
   if (command === '/add') {
     const wallet = args[0];
     if (wallet) {
-      walletAddresses.add(wallet);
+      await addWalletToKV(wallet, env);
       console.log(`Wallet ${wallet} added for tracking.`);
       await sendTelegramMessageTo(chatId, `Wallet ${wallet} added for tracking.`, env);
     } else {
@@ -132,8 +134,8 @@ async function handleTelegramCommand(update, env) {
     }
   } else if (command === '/remove') {
     const wallet = args[0];
-    if (wallet && walletAddresses.has(wallet)) {
-      walletAddresses.delete(wallet);
+    if (wallet) {
+      await removeWalletFromKV(wallet, env);
       console.log(`Wallet ${wallet} removed from tracking.`);
       await sendTelegramMessageTo(chatId, `Wallet ${wallet} removed from tracking.`, env);
     } else {
@@ -142,17 +144,17 @@ async function handleTelegramCommand(update, env) {
   } else if (command === '/winrate') {
     const wallet = args[0];
     if (wallet) {
-      const winRate = await calculateWinRate(wallet, env);
+      const winRate = await calculateWinRate(wallet, env); // Implement this function
       await sendTelegramMessageTo(chatId, `Wallet ${wallet} has a win rate of ${winRate}%.`, env);
     } else {
       await sendTelegramMessageTo(chatId, 'Please provide a wallet address.', env);
     }
   } else if (command === '/wallets') {
-    const walletsList = Array.from(walletAddresses).join('\n');
+    const walletsList = await getTrackedWalletsList(env);
     const responseMessage = walletsList ? `Tracked wallets:\n${walletsList}` : 'No wallets are being tracked.';
     await sendTelegramMessageTo(chatId, responseMessage, env);
   } else {
-    await sendTelegramMessageTo(chatId, 'Unknown command. Use /add <wallet_address> to add, /remove <wallet_address> to remove, and /winrate <wallet_address> to get win rate.', env);
+    await sendTelegramMessageTo(chatId, 'Unknown command. Use /add <wallet_address> to add, /remove <wallet_address> to remove, /winrate <wallet_address> to get win rate, and /wallets to view tracked wallets.', env);
   }
 }
 
@@ -207,4 +209,23 @@ async function calculateWinRate(wallet, env) {
     console.error('Error calculating win rate:', error);
     return 0;
   }
+}
+
+async function getTrackedWallets(env) {
+  const keys = await env[KV_NAMESPACE].list();
+  const wallets = new Set(keys.keys.map(key => key.name));
+  return wallets;
+}
+
+async function getTrackedWalletsList(env) {
+  const keys = await env[KV_NAMESPACE].list();
+  return keys.keys.map(key => key.name).join('\n');
+}
+
+async function addWalletToKV(wallet, env) {
+  await env[KV_NAMESPACE].put(wallet, 'tracked');
+}
+
+async function removeWalletFromKV(wallet, env) {
+  await env[KV_NAMESPACE].delete(wallet);
 }
