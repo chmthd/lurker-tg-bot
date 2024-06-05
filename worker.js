@@ -147,6 +147,10 @@ async function handleTelegramCommand(update, env) {
     } else {
       await sendTelegramMessageTo(chatId, 'Please provide a wallet address.', env);
     }
+  } else if (command === '/wallets') {
+    const walletsList = Array.from(walletAddresses).join('\n');
+    const responseMessage = walletsList ? `Tracked wallets:\n${walletsList}` : 'No wallets are being tracked.';
+    await sendTelegramMessageTo(chatId, responseMessage, env);
   } else {
     await sendTelegramMessageTo(chatId, 'Unknown command. Use /add <wallet_address> to add, /remove <wallet_address> to remove, and /winrate <wallet_address> to get win rate.', env);
   }
