@@ -144,7 +144,7 @@ async function handleTelegramCommand(update, env) {
   } else if (command === '/winrate') {
     const wallet = args[0];
     if (wallet) {
-      const winRate = await calculateWinRate(wallet, env); // Implement this function
+      const winRate = await calculateWinRate(wallet, env); 
       await sendTelegramMessageTo(chatId, `Wallet ${wallet} has a win rate of ${winRate}%.`, env);
     } else {
       await sendTelegramMessageTo(chatId, 'Please provide a wallet address.', env);
