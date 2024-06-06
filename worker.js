@@ -74,31 +74,66 @@ async function createMessageFromUpdate(update, env) {
   if (!update || !Array.isArray(update) || update.length === 0) return null;
 
   const trackedWallets = await getTrackedWallets(env);
+  const solDecimals = 9;
+
+  let messages = [];
 
   for (const tx of update) {
+    let message = '';
+    let emoji = '';
+    let transactionType = '';
+
     if (tx.nativeTransfers) {
       for (const transfer of tx.nativeTransfers) {
-        if (trackedWallets.has(transfer.fromUserAccount) || trackedWallets.has(transfer.toUserAccount)) {
-          return `New transaction detected involving wallet:\n\n${JSON.stringify(transfer, null, 2)}`;
-        }
-      }
-    }
+        const amountSOL = transfer.amount / Math.pow(10, solDecimals);
 
-    if (tx.accountData) {
-      for (const account of tx.accountData) {
-        if (trackedWallets.has(account.account)) {
-          return `New transaction detected involving wallet:\n\n${JSON.stringify(account, null, 2)}`;
+        if (trackedWallets.has(transfer.fromUserAccount)) {
+          emoji = '🔴'; 
+          transactionType = 'SELL';
+        } else if (trackedWallets.has(transfer.toUserAccount)) {
+          emoji = '🟢'; 
+          transactionType = 'BUY';
+        } else {
+          emoji = '🔄'; 
+          transactionType = 'TRANSFER';
+        }
+
+        if (transactionType) {
+          message += `${emoji} *${transactionType}*\n`;
+          message += `Wallet: ${transfer.fromUserAccount} transferred ${amountSOL.toFixed(2)} SOL to ${transfer.toUserAccount}\n\n`;
+          messages.push(message);
         }
       }
     }
 
     if (tx.tokenTransfers) {
       for (const transfer of tx.tokenTransfers) {
-        if (trackedWallets.has(transfer.fromUserAccount) || trackedWallets.has(transfer.toUserAccount)) {
-          return `New token transfer detected involving wallet:\n\n${JSON.stringify(transfer, null, 2)}`;
+        const amountSOL = transfer.tokenAmount / Math.pow(10, solDecimals);
+        const tokenAmount = transfer.rawTokenAmount.tokenAmount / Math.pow(10, transfer.rawTokenAmount.decimals);
+
+        if (trackedWallets.has(transfer.fromUserAccount)) {
+          emoji = '🔴'; 
+          transactionType = 'SELL';
+        } else if (trackedWallets.has(transfer.toUserAccount)) {
+          emoji = '🟢'; 
+          transactionType = 'BUY';
+        } else {
+          emoji = '🔄'; 
+          transactionType = 'TRANSFER';
+        }
+
+        if (transactionType) {
+          message += `${emoji} *${transactionType}*\n`;
+          message += `Wallet: ${transfer.fromUserAccount} transferred ${amountSOL.toFixed(2)} SOL to ${transfer.toUserAccount}\n`;
+          message += `Token: ${tokenAmount.toFixed(2)} ${transfer.mint}\n\n`;
+          messages.push(message);
         }
       }
     }
+  }
+
+  if (messages.length > 0) {
+    return messages.join('\n\n'); 
   }
 
   return null;
@@ -108,7 +143,8 @@ async function sendTelegramMessage(message, env) {
   const telegramApiUrl = `https://api.telegram.org/bot${env.TELEGRAM_TOKEN}/sendMessage`;
   const payload = {
     chat_id: env.CHAT_ID,
-    text: message
+    text: message,
+    parse_mode: 'Markdown' 
   };
   await fetchWithRetry(telegramApiUrl, {
     method: 'POST',
@@ -144,7 +180,7 @@ async function handleTelegramCommand(update, env) {
   } else if (command === '/winrate') {
     const wallet = args[0];
     if (wallet) {
-      const winRate = await calculateWinRate(wallet, env); 
+      const winRate = await calculateWinRate(wallet, env);
       await sendTelegramMessageTo(chatId, `Wallet ${wallet} has a win rate of ${winRate}%.`, env);
     } else {
       await sendTelegramMessageTo(chatId, 'Please provide a wallet address.', env);
@@ -162,7 +198,8 @@ async function sendTelegramMessageTo(chatId, message, env) {
   const telegramApiUrl = `https://api.telegram.org/bot${env.TELEGRAM_TOKEN}/sendMessage`;
   const payload = {
     chat_id: chatId,
-    text: message
+    text: message,
+    parse_mode: 'Markdown' 
   };
   await fetchWithRetry(telegramApiUrl, {
     method: 'POST',
@@ -214,6 +251,7 @@ async function calculateWinRate(wallet, env) {
 async function getTrackedWallets(env) {
   const keys = await env[KV_NAMESPACE].list();
   const wallets = new Set(keys.keys.map(key => key.name));
+  console.log(`Tracked wallets: ${Array.from(wallets).join(', ')}`);
   return wallets;
 }
 
