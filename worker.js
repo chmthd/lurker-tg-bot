@@ -45,13 +45,14 @@ async function handleWebhook(request, env) {
 async function addWallet(request, env) {
   const url = new URL(request.url);
   const wallet = url.searchParams.get('address');
-  if (wallet) {
-    await env[KV_NAMESPACE].put(wallet, 'tracked');
-    console.log(`Wallet ${wallet} added for tracking.`);
-    await sendTelegramMessage(`Wallet ${wallet} added for tracking.`, env);
+  const name = url.searchParams.get('name');
+  if (wallet && name) {
+    await env[KV_NAMESPACE].put(wallet, JSON.stringify({ name }));
+    console.log(`Wallet ${wallet} with name ${name} added for tracking.`);
+    await sendTelegramMessage(`Wallet ${wallet} with name ${name} added for tracking.`, env);
     return new Response('Wallet added', { status: 200 });
   }
-  return new Response('Wallet address missing', { status: 400 });
+  return new Response('Wallet address or name missing', { status: 400 });
 }
 
 async function removeWallet(request, env) {
@@ -144,13 +145,14 @@ async function handleTelegramCommand(update, env) {
   const [command, ...args] = text.split(' ');
 
   if (command === '/add') {
-    const wallet = args[0];
-    if (wallet) {
-      await addWalletToKV(wallet, env);
-      console.log(`Wallet ${wallet} added for tracking.`);
-      await sendTelegramMessageTo(chatId, `Wallet ${wallet} added for tracking.`, env);
+    const name = args[0];
+    const wallet = args[1];
+    if (name && wallet) {
+      await addWalletToKV(wallet, name, env);
+      console.log(`Wallet ${wallet} with name ${name} added for tracking.`);
+      await sendTelegramMessageTo(chatId, `Wallet ${wallet} with name ${name} added for tracking.`, env);
     } else {
-      await sendTelegramMessageTo(chatId, 'Please provide a wallet address.', env);
+      await sendTelegramMessageTo(chatId, 'Please provide both a name and a wallet address.', env);
     }
   } else if (command === '/remove') {
     const wallet = args[0];
@@ -164,17 +166,18 @@ async function handleTelegramCommand(update, env) {
   } else if (command === '/winrate') {
     const wallet = args[0];
     if (wallet) {
-      const winRate = await calculateWinRate(wallet, env); // Implement this function
+      const winRate = await calculateWinRate(wallet, env);
       await sendTelegramMessageTo(chatId, `Wallet ${wallet} has a win rate of ${winRate}%.`, env);
     } else {
       await sendTelegramMessageTo(chatId, 'Please provide a wallet address.', env);
     }
   } else if (command === '/wallets') {
     const walletsList = await getTrackedWalletsList(env);
-    const responseMessage = walletsList ? `Tracked wallets:\n${walletsList}` : 'No wallets are being tracked.';
+    const totalWallets = (await env[KV_NAMESPACE].list()).keys.length;
+    const responseMessage = walletsList ? `Tracked wallets: ${totalWallets}\n${walletsList}` : 'No wallets are being tracked.';
     await sendTelegramMessageTo(chatId, responseMessage, env);
   } else {
-    await sendTelegramMessageTo(chatId, 'Unknown command. Use /add <wallet_address> to add, /remove <wallet_address> to remove, /winrate <wallet_address> to get win rate, and /wallets to view tracked wallets.', env);
+    await sendTelegramMessageTo(chatId, 'Unknown command. Use /add <name> <wallet_address> to add, /remove <wallet_address> to remove, /winrate <wallet_address> to get win rate, and /wallets to view tracked wallets.', env);
   }
 }
 
@@ -233,17 +236,24 @@ async function calculateWinRate(wallet, env) {
 
 async function getTrackedWallets(env) {
   const keys = await env[KV_NAMESPACE].list();
-  const wallets = new Set(keys.keys.map(key => key.name));
+  const wallets = new Map();
+  for (const key of keys.keys) {
+    const metadata = JSON.parse(key.metadata || '{}');
+    wallets.set(key.name, metadata.name);
+  }
   return wallets;
 }
 
 async function getTrackedWalletsList(env) {
   const keys = await env[KV_NAMESPACE].list();
-  return keys.keys.map(key => key.name).join('\n');
+  return keys.keys.map(key => {
+    const metadata = JSON.parse(key.metadata || '{}');
+    return `${key.name} (${metadata.name || 'No Name'})`;
+  }).join('\n');
 }
 
-async function addWalletToKV(wallet, env) {
-  await env[KV_NAMESPACE].put(wallet, 'tracked');
+async function addWalletToKV(wallet, name, env) {
+  await env[KV_NAMESPACE].put(wallet, '', { metadata: JSON.stringify({ name }) });
 }
 
 async function removeWalletFromKV(wallet, env) {
