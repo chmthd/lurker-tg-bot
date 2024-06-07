@@ -1,4 +1,6 @@
 const KV_NAMESPACE = 'WALLETS';
+const IGNORED_ADDRESS = 'HFqU5x63VTqvQss8hp11i4wVV8bD44PvwucfZ2bU7gRe';
+const SOL_DECIMALS = 9;
 
 export default {
   async fetch(request, env) {
@@ -25,7 +27,7 @@ async function handleRequest(request, env) {
 async function handleWebhook(request, env) {
   try {
     const update = await request.json();
-    console.log('Webhook update received:', JSON.stringify(update, null, 2));
+    console.log('Webhook update received:', JSON.stringify(update));
     const message = await createMessageFromUpdate(update, env);
     if (message) {
       console.log('Sending Telegram message:', message);
@@ -74,66 +76,49 @@ async function createMessageFromUpdate(update, env) {
   if (!update || !Array.isArray(update) || update.length === 0) return null;
 
   const trackedWallets = await getTrackedWallets(env);
-  const solDecimals = 9;
-
-  let messages = [];
 
   for (const tx of update) {
-    let message = '';
-    let emoji = '';
-    let transactionType = '';
+    const involvedAddresses = new Set();
 
     if (tx.nativeTransfers) {
       for (const transfer of tx.nativeTransfers) {
-        const amountSOL = transfer.amount / Math.pow(10, solDecimals);
-
-        if (trackedWallets.has(transfer.fromUserAccount)) {
-          emoji = '🔴'; 
-          transactionType = 'SELL';
-        } else if (trackedWallets.has(transfer.toUserAccount)) {
-          emoji = '🟢'; 
-          transactionType = 'BUY';
-        } else {
-          emoji = '🔄'; 
-          transactionType = 'TRANSFER';
+        involvedAddresses.add(transfer.fromUserAccount);
+        involvedAddresses.add(transfer.toUserAccount);
+        if (transfer.toUserAccount === IGNORED_ADDRESS) continue;
+        if (trackedWallets.has(transfer.fromUserAccount) || trackedWallets.has(transfer.toUserAccount)) {
+          const amountSOL = (transfer.amount / Math.pow(10, SOL_DECIMALS)).toFixed(9);
+          tx.nativeTransfers = tx.nativeTransfers.map(t => ({
+            ...t,
+            amount: t.amount / Math.pow(10, SOL_DECIMALS)
+          }));
         }
+      }
+    }
 
-        if (transactionType) {
-          message += `${emoji} *${transactionType}*\n`;
-          message += `Wallet: ${transfer.fromUserAccount} transferred ${amountSOL.toFixed(2)} SOL to ${transfer.toUserAccount}\n\n`;
-          messages.push(message);
+    if (tx.accountData) {
+      for (const account of tx.accountData) {
+        involvedAddresses.add(account.account);
+        if (trackedWallets.has(account.account)) {
+          return `New transaction detected involving wallet:\n\n${JSON.stringify(tx)}`;
         }
       }
     }
 
     if (tx.tokenTransfers) {
       for (const transfer of tx.tokenTransfers) {
-        const amountSOL = transfer.tokenAmount / Math.pow(10, solDecimals);
-        const tokenAmount = transfer.rawTokenAmount.tokenAmount / Math.pow(10, transfer.rawTokenAmount.decimals);
-
-        if (trackedWallets.has(transfer.fromUserAccount)) {
-          emoji = '🔴'; 
-          transactionType = 'SELL';
-        } else if (trackedWallets.has(transfer.toUserAccount)) {
-          emoji = '🟢'; 
-          transactionType = 'BUY';
-        } else {
-          emoji = '🔄'; 
-          transactionType = 'TRANSFER';
-        }
-
-        if (transactionType) {
-          message += `${emoji} *${transactionType}*\n`;
-          message += `Wallet: ${transfer.fromUserAccount} transferred ${amountSOL.toFixed(2)} SOL to ${transfer.toUserAccount}\n`;
-          message += `Token: ${tokenAmount.toFixed(2)} ${transfer.mint}\n\n`;
-          messages.push(message);
+        involvedAddresses.add(transfer.fromUserAccount);
+        involvedAddresses.add(transfer.toUserAccount);
+        if (trackedWallets.has(transfer.fromUserAccount) || trackedWallets.has(transfer.toUserAccount)) {
+          return `New token transfer detected involving wallet:\n\n${JSON.stringify(tx)}`;
         }
       }
     }
-  }
 
-  if (messages.length > 0) {
-    return messages.join('\n\n'); 
+    for (const address of involvedAddresses) {
+      if (trackedWallets.has(address) && !involvedAddresses.has(IGNORED_ADDRESS)) {
+        return `New transaction detected involving wallet:\n\n${JSON.stringify(tx)}`;
+      }
+    }
   }
 
   return null;
@@ -143,8 +128,7 @@ async function sendTelegramMessage(message, env) {
   const telegramApiUrl = `https://api.telegram.org/bot${env.TELEGRAM_TOKEN}/sendMessage`;
   const payload = {
     chat_id: env.CHAT_ID,
-    text: message,
-    parse_mode: 'Markdown' 
+    text: message
   };
   await fetchWithRetry(telegramApiUrl, {
     method: 'POST',
@@ -180,7 +164,7 @@ async function handleTelegramCommand(update, env) {
   } else if (command === '/winrate') {
     const wallet = args[0];
     if (wallet) {
-      const winRate = await calculateWinRate(wallet, env);
+      const winRate = await calculateWinRate(wallet, env); // Implement this function
       await sendTelegramMessageTo(chatId, `Wallet ${wallet} has a win rate of ${winRate}%.`, env);
     } else {
       await sendTelegramMessageTo(chatId, 'Please provide a wallet address.', env);
@@ -198,8 +182,7 @@ async function sendTelegramMessageTo(chatId, message, env) {
   const telegramApiUrl = `https://api.telegram.org/bot${env.TELEGRAM_TOKEN}/sendMessage`;
   const payload = {
     chat_id: chatId,
-    text: message,
-    parse_mode: 'Markdown' 
+    text: message
   };
   await fetchWithRetry(telegramApiUrl, {
     method: 'POST',
@@ -251,7 +234,6 @@ async function calculateWinRate(wallet, env) {
 async function getTrackedWallets(env) {
   const keys = await env[KV_NAMESPACE].list();
   const wallets = new Set(keys.keys.map(key => key.name));
-  console.log(`Tracked wallets: ${Array.from(wallets).join(', ')}`);
   return wallets;
 }
 
