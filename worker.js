@@ -1,6 +1,4 @@
 const KV_NAMESPACE = 'WALLETS';
-const IGNORED_ADDRESS = 'HFqU5x63VTqvQss8hp11i4wVV8bD44PvwucfZ2bU7gRe';
-const SOL_DECIMALS = 9;
 
 export default {
   async fetch(request, env) {
@@ -27,13 +25,15 @@ async function handleRequest(request, env) {
 async function handleWebhook(request, env) {
   try {
     const update = await request.json();
-    console.log('Webhook update received:', JSON.stringify(update));
-    const message = await createMessageFromUpdate(update, env);
-    if (message) {
-      console.log('Sending Telegram message:', message);
-      await sendTelegramMessage(message, env);
-    } else {
-      console.log('No relevant transaction found.');
+    console.log('Webhook update received:', JSON.stringify(update, null, 2));
+    const messages = await createMessagesFromUpdate(update, env);
+    for (const message of messages) {
+      if (message) {
+        console.log('Sending Telegram message:', message);
+        await sendTelegramMessage(message, env);
+      } else {
+        console.log('No relevant transaction found.');
+      }
     }
     return new Response('OK', { status: 200 });
   } catch (error) {
@@ -73,53 +73,61 @@ async function handleBot(request, env) {
   return new Response('OK', { status: 200 });
 }
 
-async function createMessageFromUpdate(update, env) {
-  if (!update || !Array.isArray(update) || update.length === 0) return null;
+async function createMessagesFromUpdate(update, env) {
+  if (!update || !Array.isArray(update) || update.length === 0) return [];
 
   const trackedWallets = await getTrackedWallets(env);
+  const messages = [];
 
   for (const tx of update) {
-    const involvedAddresses = new Set();
-
-    if (tx.nativeTransfers) {
-      for (const transfer of tx.nativeTransfers) {
-        involvedAddresses.add(transfer.fromUserAccount);
-        involvedAddresses.add(transfer.toUserAccount);
-        if (transfer.toUserAccount === IGNORED_ADDRESS) continue;
-        if (trackedWallets.has(transfer.fromUserAccount) || trackedWallets.has(transfer.toUserAccount)) {
-          const amountSOL = (transfer.amount / Math.pow(10, SOL_DECIMALS)).toFixed(9);
-          tx.nativeTransfers = tx.nativeTransfers.map(t => ({
-            ...t,
-            amount: t.amount / Math.pow(10, SOL_DECIMALS)
-          }));
-        }
-      }
+    const message = await processTransaction(tx, trackedWallets);
+    if (message) {
+      messages.push(message);
     }
+  }
 
-    if (tx.accountData) {
-      for (const account of tx.accountData) {
-        involvedAddresses.add(account.account);
-        if (trackedWallets.has(account.account)) {
-          return `New transaction detected involving wallet:\n\n${JSON.stringify(tx)}`;
-        }
-      }
-    }
+  return messages;
+}
 
-    if (tx.tokenTransfers) {
-      for (const transfer of tx.tokenTransfers) {
-        involvedAddresses.add(transfer.fromUserAccount);
-        involvedAddresses.add(transfer.toUserAccount);
-        if (trackedWallets.has(transfer.fromUserAccount) || trackedWallets.has(transfer.toUserAccount)) {
-          return `New token transfer detected involving wallet:\n\n${JSON.stringify(tx)}`;
-        }
-      }
-    }
+async function processTransaction(tx, trackedWallets) {
+  const { tokenTransfers, nativeTransfers, signature, source, timestamp } = tx;
+  let solAmount = 0;
+  let tokenTransferAmount = 0;
+  let trackingAddress = null;
+  let transactionType = null; // BUY or SELL
 
-    for (const address of involvedAddresses) {
-      if (trackedWallets.has(address) && !involvedAddresses.has(IGNORED_ADDRESS)) {
-        return `New transaction detected involving wallet:\n\n${JSON.stringify(tx)}`;
-      }
+  for (const transfer of tokenTransfers) {
+    if (trackedWallets[transfer.fromUserAccount] || trackedWallets[transfer.toUserAccount]) {
+      trackingAddress = trackedWallets[transfer.fromUserAccount] ? transfer.fromUserAccount : transfer.toUserAccount;
+      transactionType = trackedWallets[transfer.fromUserAccount] ? 'SELL' : 'BUY';
+      tokenTransferAmount = parseFloat(transfer.tokenAmount);
+      break;
     }
+  }
+
+  for (const transfer of nativeTransfers) {
+    if (trackedWallets[transfer.fromUserAccount] || trackedWallets[transfer.toUserAccount]) {
+      solAmount = parseFloat(transfer.amount) / 1000000000; // Convert lamports to SOL
+      break;
+    }
+  }
+
+  if (transactionType && trackingAddress) {
+    const walletName = trackedWallets[trackingAddress];
+    const solValue = transactionType === 'SELL' ? `+${solAmount.toFixed(2)}` : `-${solAmount.toFixed(2)}`;
+    const tokenValue = transactionType === 'SELL' ? `-${tokenTransferAmount.toFixed(2)}` : `+${tokenTransferAmount.toFixed(2)}`;
+
+    const message = `
+${transactionType === 'SELL' ? '🔴 <a href="https://explorer.solana.com/tx/${signature}">SELL</a>' : '🟢 <a href="https://explorer.solana.com/tx/${signature}">BUY</a>'} on ${source}
+<code>${trackingAddress}</code>
+(<b>${walletName}</b>)
+
+🔹<b>${walletName}</b>:
+<b>SOL</b>: ${solValue}
+<b>TOKEN</b>: ${tokenValue}
+    `;
+
+    return message;
   }
 
   return null;
@@ -129,7 +137,8 @@ async function sendTelegramMessage(message, env) {
   const telegramApiUrl = `https://api.telegram.org/bot${env.TELEGRAM_TOKEN}/sendMessage`;
   const payload = {
     chat_id: env.CHAT_ID,
-    text: message
+    text: message,
+    parse_mode: 'HTML' // Using HTML for formatting
   };
   await fetchWithRetry(telegramApiUrl, {
     method: 'POST',
@@ -174,7 +183,7 @@ async function handleTelegramCommand(update, env) {
   } else if (command === '/wallets') {
     const walletsList = await getTrackedWalletsList(env);
     const totalWallets = (await env[KV_NAMESPACE].list()).keys.length;
-    const responseMessage = walletsList ? `Tracked wallets: ${totalWallets}\n${walletsList}` : 'No wallets are being tracked.';
+    const responseMessage = walletsList ? `<b>Tracked wallets (${totalWallets}):</b>\n${walletsList}` : 'No wallets are being tracked.';
     await sendTelegramMessageTo(chatId, responseMessage, env);
   } else {
     await sendTelegramMessageTo(chatId, 'Unknown command. Use /add <name> <wallet_address> to add, /remove <wallet_address> to remove, /winrate <wallet_address> to get win rate, and /wallets to view tracked wallets.', env);
@@ -185,7 +194,8 @@ async function sendTelegramMessageTo(chatId, message, env) {
   const telegramApiUrl = `https://api.telegram.org/bot${env.TELEGRAM_TOKEN}/sendMessage`;
   const payload = {
     chat_id: chatId,
-    text: message
+    text: message,
+    parse_mode: 'HTML'
   };
   await fetchWithRetry(telegramApiUrl, {
     method: 'POST',
@@ -236,11 +246,11 @@ async function calculateWinRate(wallet, env) {
 
 async function getTrackedWallets(env) {
   const keys = await env[KV_NAMESPACE].list();
-  const wallets = new Map();
-  for (const key of keys.keys) {
+  const wallets = {};
+  keys.keys.forEach(key => {
     const metadata = JSON.parse(key.metadata || '{}');
-    wallets.set(key.name, metadata.name);
-  }
+    wallets[key.name] = metadata.name || 'No name';
+  });
   return wallets;
 }
 
@@ -248,12 +258,12 @@ async function getTrackedWalletsList(env) {
   const keys = await env[KV_NAMESPACE].list();
   return keys.keys.map(key => {
     const metadata = JSON.parse(key.metadata || '{}');
-    return `${key.name} (${metadata.name || 'No Name'})`;
+    return `<code>${key.name}</code> (${metadata.name || 'No name'})`;
   }).join('\n');
 }
 
 async function addWalletToKV(wallet, name, env) {
-  await env[KV_NAMESPACE].put(wallet, '', { metadata: JSON.stringify({ name }) });
+  await env[KV_NAMESPACE].put(wallet, JSON.stringify({ name }));
 }
 
 async function removeWalletFromKV(wallet, env) {
