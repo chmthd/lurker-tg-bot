@@ -1,7 +1,7 @@
 import { Connection, PublicKey } from '@solana/web3.js';
 
 const KV_NAMESPACE = 'WALLETS';
-const SOLSCAN_TOKEN_API_URL = 'https://public-api.solscan.io/token/meta?tokenAddress=';
+// const SOLSCAN_TOKEN_API_URL = 'https://public-api.solscan.io/token/meta?tokenAddress=';
 
 export default {
   async fetch(request, env) {
@@ -119,10 +119,10 @@ async function processTransaction(tx, trackedWallets, env) {
 
   if (transactionType && trackingAddress) {
     const walletName = trackedWallets[trackingAddress];
-    const solValue = transactionType === 'SELL' ? `+${solAmount.toFixed(2)}` : `-${solAmount.toFixed(2)}`;
-    const tokenValue = transactionType === 'SELL' ? `-${tokenTransferAmount.toFixed(2)}` : `+${tokenTransferAmount.toFixed(2)}`;
+    const solValue = transactionType === 'SELL' ? `-${solAmount.toFixed(2)}` : `+${solAmount.toFixed(2)}`;
+    const tokenValue = transactionType === 'SELL' ? `+${tokenTransferAmount.toFixed(2)}` : `-${tokenTransferAmount.toFixed(2)}`;
     const tokenLink = `https://solscan.io/token/${tokenMint}`;
-    const tokenName = await fetchTokenName(tokenMint);
+    const tokenName = await fetchTokenName(tokenMint, env);
 
     const message = `
 ${transactionType === 'SELL' ? `🔴 <a href="https://solscan.io/tx/${signature}">SELL</a>` : `🟢 <a href="https://solscan.io/tx/${signature}">BUY</a>`} on ${source}
@@ -140,14 +140,22 @@ ${transactionType === 'SELL' ? `🔴 <a href="https://solscan.io/tx/${signature}
   return null;
 }
 
-async function fetchTokenName(tokenMint) {
+async function fetchTokenName(tokenMint, env) {
   try {
-    const response = await fetch(`${SOLSCAN_TOKEN_API_URL}${tokenMint}`);
-    if (!response.ok) {
-      throw new Error(`Failed to fetch token name: ${response.statusText}`);
-    }
+    const response = await fetch(`https://solana-mainnet.g.alchemy.com/v2/${env.ALCHEMY_API_KEY}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'getAccountInfo',
+        params: [tokenMint, { encoding: 'jsonParsed' }]
+      })
+    });
+
     const data = await response.json();
-    return data.data.symbol || 'Unknown';
+    const parsedData = data.result.value.data.parsed.info;
+    return parsedData.symbol || 'Unknown';
   } catch (error) {
     console.error('Error fetching token name:', error);
     return 'Unknown';

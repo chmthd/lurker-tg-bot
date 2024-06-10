@@ -14,6 +14,7 @@
     "wrangler": "^3.0.0"
   },
   "dependencies": {
-    "@solana/web3.js": "^1.92.3"
+    "@solana/web3.js": "^1.92.3",
+    "dotenv": "^16.4.5"
   }
 }
