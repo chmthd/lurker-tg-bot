@@ -1,3 +1,5 @@
+import { Connection, PublicKey } from '@solana/web3.js';
+
 const KV_NAMESPACE = 'WALLETS';
 const SOLSCAN_TOKEN_API_URL = 'https://public-api.solscan.io/token/meta?tokenAddress=';
 
@@ -81,7 +83,7 @@ async function createMessagesFromUpdate(update, env) {
   const messages = [];
 
   for (const tx of update) {
-    const message = await processTransaction(tx, trackedWallets);
+    const message = await processTransaction(tx, trackedWallets, env);
     if (message) {
       messages.push(message);
     }
@@ -90,7 +92,7 @@ async function createMessagesFromUpdate(update, env) {
   return messages;
 }
 
-async function processTransaction(tx, trackedWallets) {
+async function processTransaction(tx, trackedWallets, env) {
   const { tokenTransfers, nativeTransfers, signature, source, timestamp } = tx;
   let solAmount = 0;
   let tokenTransferAmount = 0;
@@ -275,11 +277,17 @@ async function fetchWithRetry(url, options, retries = 3) {
 }
 
 async function calculateWinRate(wallet, env) {
-  const heliusApiUrl = `https://api.helius.xyz/v0/addresses/${wallet}/transactions?api-key=${env.HELIUS_API_KEY}`;
+  const alchemyApiUrl = `https://solana-mainnet.g.alchemy.com/v2/${env.ALCHEMY_API_KEY}/getAssetTransfers?fromAddress=${wallet}`;
   
   try {
-    const response = await fetchWithRetry(heliusApiUrl, { method: 'GET' });
-    const transactions = await response.json();
+    const response = await fetchWithRetry(alchemyApiUrl, { method: 'GET' });
+    const data = await response.json();
+
+    if (data.error) {
+      throw new Error(`Alchemy API error: ${data.error.message}`);
+    }
+
+    const transactions = data.result.transfers;
     
     let wins = 0;
     let totalTrades = transactions.length;
